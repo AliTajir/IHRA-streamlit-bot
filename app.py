@@ -1,20 +1,19 @@
 """
 IHRA Chatbot - Advanced Version with File Upload
 Supports TXT, PDF, and DOCX files
+Fixed for Streamlit Cloud deployment
 """
 
 import streamlit as st
 import os
-# from dotenv import load_dotenv
 import openai
 from typing import List, Dict
 import chromadb
-from chromadb.config import Settings
 import PyPDF2
 from docx import Document as DocxDocument
+import tempfile
 
-# Load environment variables
-
+# OpenAI API Key
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # Page config
@@ -27,10 +26,8 @@ st.set_page_config(
 class AdvancedIHRAChatbot:
     def __init__(self):
         """Initialize chatbot with vector database"""
-        self.client = chromadb.Client(Settings(
-            anonymized_telemetry=False,
-            allow_reset=True
-        ))
+        # Use ephemeral client for Streamlit Cloud (in-memory)
+        self.client = chromadb.EphemeralClient()
         
         self.collection = self.client.get_or_create_collection(
             name="ihra_documents_advanced",
@@ -117,11 +114,15 @@ class AdvancedIHRAChatbot:
     
     def _get_embedding(self, text: str) -> List[float]:
         """Get embedding from OpenAI"""
-        response = openai.embeddings.create(
-            model="text-embedding-3-small",
-            input=text
-        )
-        return response.data[0].embedding
+        try:
+            response = openai.embeddings.create(
+                model="text-embedding-3-small",
+                input=text
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            st.error(f"Embedding error: {str(e)}")
+            raise
     
     def store_document(self, document_text: str, progress_callback=None):
         """Store document in vector database"""
@@ -228,6 +229,11 @@ with st.sidebar:
     st.title("🏥 IHRA Assistant Pro")
     st.markdown("---")
     
+    # API Key warning
+    if not os.getenv("OPENAI_API_KEY"):
+        st.error("⚠️ OPENAI_API_KEY not found in secrets!")
+        st.info("Add it in Streamlit Cloud: Settings → Secrets")
+    
     # Document upload section
     st.subheader("📄 Upload Document")
     
@@ -255,19 +261,22 @@ with st.sidebar:
                     progress_bar.progress(progress)
                     status_text.text(f"Processing chunks: {current}/{total}")
                 
-                # Store document
-                chunk_count = st.session_state.chatbot.store_document(
-                    doc_text,
-                    update_progress
-                )
-                
-                st.session_state.document_loaded = True
-                st.session_state.chunk_count = chunk_count
-                st.session_state.messages = []  # Clear chat
-                
-                progress_bar.empty()
-                status_text.empty()
-                st.success(f"✅ Loaded {chunk_count} chunks!")
+                try:
+                    # Store document
+                    chunk_count = st.session_state.chatbot.store_document(
+                        doc_text,
+                        update_progress
+                    )
+                    
+                    st.session_state.document_loaded = True
+                    st.session_state.chunk_count = chunk_count
+                    st.session_state.messages = []  # Clear chat
+                    
+                    progress_bar.empty()
+                    status_text.empty()
+                    st.success(f"✅ Loaded {chunk_count} chunks!")
+                except Exception as e:
+                    st.error(f"❌ Error processing document: {str(e)}")
             else:
                 st.error(f"❌ {doc_text}")
     
@@ -331,6 +340,10 @@ if not st.session_state.document_loaded:
     - **Vector Database**: Fast semantic search with ChromaDB
     - **Multiple Models**: Choose between GPT-4 and GPT-3.5
     - **Conversation Memory**: Context-aware responses
+    
+    ### ⚙️ Deployment Notes
+    - Uses in-memory storage (data resets on app restart)
+    - Optimized for Streamlit Cloud
     """)
 else:
     # Display chat messages
