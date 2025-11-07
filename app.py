@@ -8,10 +8,10 @@ import streamlit as st
 import os
 import openai
 from typing import List, Dict
-import chromadb
 import PyPDF2
 from docx import Document as DocxDocument
-import tempfile
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 # OpenAI API Key
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -23,16 +23,54 @@ st.set_page_config(
     layout="wide"
 )
 
+class SimpleVectorStore:
+    """Simple in-memory vector store"""
+    def __init__(self):
+        self.documents = []
+        self.embeddings = []
+        self.ids = []
+        self.metadatas = []
+    
+    def add(self, documents: List[str], embeddings: List[List[float]], 
+            ids: List[str], metadatas: List[Dict]):
+        """Add documents to store"""
+        self.documents.extend(documents)
+        self.embeddings.extend(embeddings)
+        self.ids.extend(ids)
+        self.metadatas.extend(metadatas)
+    
+    def query(self, query_embedding: List[float], n_results: int = 5) -> List[str]:
+        """Query similar documents"""
+        if not self.embeddings:
+            return []
+        
+        # Calculate cosine similarity
+        query_emb = np.array(query_embedding).reshape(1, -1)
+        doc_embs = np.array(self.embeddings)
+        
+        similarities = cosine_similarity(query_emb, doc_embs)[0]
+        
+        # Get top k indices
+        top_indices = np.argsort(similarities)[-n_results:][::-1]
+        
+        return [self.documents[i] for i in top_indices]
+    
+    def count(self) -> int:
+        """Return number of documents"""
+        return len(self.documents)
+    
+    def reset(self):
+        """Clear all data"""
+        self.documents = []
+        self.embeddings = []
+        self.ids = []
+        self.metadatas = []
+
+
 class AdvancedIHRAChatbot:
     def __init__(self):
-        """Initialize chatbot with vector database"""
-        # Use ephemeral client for Streamlit Cloud (in-memory)
-        self.client = chromadb.EphemeralClient()
-        
-        self.collection = self.client.get_or_create_collection(
-            name="ihra_documents_advanced",
-            metadata={"hnsw:space": "cosine"}
-        )
+        """Initialize chatbot with simple vector store"""
+        self.vector_store = SimpleVectorStore()
     
     def extract_text_from_pdf(self, pdf_file) -> str:
         """Extract text from PDF file"""
@@ -70,11 +108,7 @@ class AdvancedIHRAChatbot:
     def reset_database(self):
         """Clear the vector database"""
         try:
-            self.client.delete_collection("ihra_documents_advanced")
-            self.collection = self.client.get_or_create_collection(
-                name="ihra_documents_advanced",
-                metadata={"hnsw:space": "cosine"}
-            )
+            self.vector_store.reset()
             return True
         except Exception as e:
             st.error(f"Error resetting database: {str(e)}")
@@ -132,9 +166,9 @@ class AdvancedIHRAChatbot:
         for i, chunk in enumerate(chunks):
             embedding = self._get_embedding(chunk["text"])
             
-            self.collection.add(
-                embeddings=[embedding],
+            self.vector_store.add(
                 documents=[chunk["text"]],
+                embeddings=[embedding],
                 ids=[chunk["id"]],
                 metadatas=[chunk["metadata"]]
             )
@@ -146,22 +180,19 @@ class AdvancedIHRAChatbot:
     
     def _retrieve_relevant_chunks(self, query: str, top_k: int = 5) -> List[str]:
         """Retrieve relevant chunks"""
-        if self.collection.count() == 0:
+        if self.vector_store.count() == 0:
             return []
         
         query_embedding = self._get_embedding(query)
         
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=min(top_k, self.collection.count())
-        )
+        results = self.vector_store.query(query_embedding, n_results=min(top_k, self.vector_store.count()))
         
-        return results['documents'][0] if results['documents'] else []
+        return results
     
     def chat(self, user_query: str, conversation_history: List[Dict] = None, 
              model: str = "gpt-4o-mini", temperature: float = 0.7) -> str:
         """Chat with RAG"""
-        if self.collection.count() == 0:
+        if self.vector_store.count() == 0:
             return "⚠️ No documents loaded. Please upload a document first."
         
         relevant_chunks = self._retrieve_relevant_chunks(user_query, top_k=5)
@@ -337,13 +368,14 @@ if not st.session_state.document_loaded:
     
     ### 🎯 Features
     - **RAG Technology**: Retrieval Augmented Generation for accurate answers
-    - **Vector Database**: Fast semantic search with ChromaDB
+    - **Vector Database**: Fast semantic search with in-memory storage
     - **Multiple Models**: Choose between GPT-4 and GPT-3.5
     - **Conversation Memory**: Context-aware responses
     
     ### ⚙️ Deployment Notes
     - Uses in-memory storage (data resets on app restart)
     - Optimized for Streamlit Cloud
+    - No external database dependencies
     """)
 else:
     # Display chat messages
@@ -369,6 +401,7 @@ else:
                     temperature=temperature
                 )
             st.markdown(response)
+        
         # Add assistant message
         st.session_state.messages.append({"role": "assistant", "content": response})
 
