@@ -369,7 +369,6 @@ else:
                     temperature=temperature
                 )
             st.markdown(response)
-        
         # Add assistant message
         st.session_state.messages.append({"role": "assistant", "content": response})
 
